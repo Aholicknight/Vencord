@@ -43,21 +43,30 @@ const settings = definePluginSettings({
     },
     channelOverrides: {
         type: OptionType.CUSTOM,
-        default: {} as Record<string, boolean>
+        default: {} as Record<string, boolean>,
+        description: "Per-channel silent typing override map. Overrides the global setting for specific channels.",
+        hidden: true
     }
 });
 
-const getOverrides = () => settings.store.channelOverrides ?? (settings.store.channelOverrides = {} as Record<string, boolean>);
-const isEnabledForChannel = (channelId?: string) => {
-    const overrides = getOverrides();
-    const override = channelId ? overrides[channelId] : undefined;
-    return override ?? settings.store.isEnabled;
+const getOverrides = () => settings.store.channelOverrides as Record<string, boolean>;
+const isEnabledForChannel = (channelId?: string, overrides?: Record<string, boolean>) => {
+    const source = overrides ?? getOverrides();
+    const override = channelId ? source[channelId] : undefined;
+    return override !== undefined ? override : settings.store.isEnabled;
 };
 const toggleChannel = (channelId: string) => {
     const overrides = getOverrides();
-    const next = !isEnabledForChannel(channelId);
-    if (next === settings.store.isEnabled) delete overrides[channelId];
-    else overrides[channelId] = next;
+    const next = !isEnabledForChannel(channelId, overrides);
+
+    if (next === settings.store.isEnabled) {
+        const { [channelId]: _removed, ...rest } = overrides;
+        settings.store.channelOverrides = rest;
+    } else {
+        settings.store.channelOverrides = { ...overrides, [channelId]: next };
+    }
+
+    return next;
 };
 
 function SilentTypingEnabledIcon() {
@@ -88,21 +97,20 @@ const SilentTypingIcon: IconComponent = ({ height = 20, width = 20, className, c
 };
 
 const SilentTypingToggle: ChatBarButtonFactory = ({ isMainChat, channel }) => {
-    const pluginSettings = settings.use();
-    const { showIcon, channelOverrides } = pluginSettings;
+    const { showIcon, channelOverrides } = settings.use(["showIcon", "channelOverrides"]);
     const channelId = channel?.id;
 
     if (!isMainChat || !showIcon || !channelId) return null;
 
-    const channelOverride = channelOverrides?.[channelId];
-    const enabled = isEnabledForChannel(channelId);
+    const enabled = isEnabledForChannel(channelId, channelOverrides);
     const toggle = () => toggleChannel(channelId);
+    const tooltip = enabled
+        ? "Disable Silent Typing for this channel"
+        : "Enable Silent Typing for this channel";
 
     return (
         <ChatBarButton
-            tooltip={enabled
-                ? (channelOverride === undefined ? "Disable Silent Typing here" : "Disable Silent Typing for this channel")
-                : (channelOverride === undefined ? "Enable Silent Typing here" : "Enable Silent Typing for this channel")}
+            tooltip={tooltip}
             onClick={toggle}
         >
             {enabled ? <SilentTypingEnabledIcon /> : <SilentTypingIcon />}
@@ -119,15 +127,15 @@ const ChatBarContextCheckbox: NavContextMenuPatchCallback = children => {
 
     if (!group) return;
 
-    const idx = group.findIndex(c => c?.props?.id === "submit-button");
-    const insertAt = idx === -1 ? group.length : idx + 1;
+    const submitButtonIndex = group.findIndex(c => c?.props?.id === "submit-button");
+    const insertionIndex = submitButtonIndex === -1 ? group.length : submitButtonIndex + 1;
     const channelId = SelectedChannelStore.getChannelId();
 
     if (channelId) {
-        group.splice(insertAt, 0,
+        group.splice(insertionIndex, 0,
             <Menu.MenuCheckboxItem
                 id="vc-silent-typing-channel"
-                label="Enable Silent Typing (channel)"
+                label="Silent Typing (this channel)"
                 checked={isEnabledForChannel(channelId)}
                 action={() => toggleChannel(channelId)}
             />
