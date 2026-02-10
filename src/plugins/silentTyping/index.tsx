@@ -22,7 +22,7 @@ import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/Co
 import { definePluginSettings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import definePlugin, { IconComponent, OptionType } from "@utils/types";
-import { FluxDispatcher, Menu, React } from "@webpack/common";
+import { FluxDispatcher, Menu, React, SelectedChannelStore } from "@webpack/common";
 
 const settings = definePluginSettings({
     showIcon: {
@@ -40,8 +40,34 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Toggle functionality",
         default: true,
+    },
+    channelOverrides: {
+        type: OptionType.CUSTOM,
+        default: {} as Record<string, boolean>,
+        description: "Per-channel silent typing override map. Overrides the global setting for specific channels.",
+        hidden: true
     }
 });
+
+const getOverrides = () => settings.store.channelOverrides as Record<string, boolean>;
+const isEnabledForChannel = (channelId?: string, overrides?: Record<string, boolean>) => {
+    const source = overrides ?? getOverrides();
+    const override = channelId ? source[channelId] : undefined;
+    return override !== undefined ? override : settings.store.isEnabled;
+};
+const toggleChannel = (channelId: string) => {
+    const overrides = getOverrides();
+    const next = !isEnabledForChannel(channelId, overrides);
+
+    if (next === settings.store.isEnabled) {
+        const { [channelId]: _removed, ...rest } = overrides;
+        settings.store.channelOverrides = rest;
+    } else {
+        settings.store.channelOverrides = { ...overrides, [channelId]: next };
+    }
+
+    return next;
+};
 
 function SilentTypingEnabledIcon() {
     return (
@@ -70,41 +96,51 @@ const SilentTypingIcon: IconComponent = ({ height = 20, width = 20, className, c
     );
 };
 
-const SilentTypingToggle: ChatBarButtonFactory = ({ isMainChat }) => {
-    const { isEnabled, showIcon } = settings.use(["isEnabled", "showIcon"]);
-    const toggle = () => settings.store.isEnabled = !settings.store.isEnabled;
+const SilentTypingToggle: ChatBarButtonFactory = ({ isMainChat, channel }) => {
+    const { showIcon, channelOverrides } = settings.use(["showIcon", "channelOverrides"]);
+    const channelId = channel?.id;
 
-    if (!isMainChat || !showIcon) return null;
+    if (!isMainChat || !showIcon || !channelId) return null;
+
+    const enabled = isEnabledForChannel(channelId, channelOverrides);
+    const toggle = () => toggleChannel(channelId);
+    const tooltip = enabled
+        ? "Disable Silent Typing for this channel"
+        : "Enable Silent Typing for this channel";
 
     return (
         <ChatBarButton
-            tooltip={isEnabled ? "Disable Silent Typing" : "Enable Silent Typing"}
+            tooltip={tooltip}
             onClick={toggle}
         >
-            {isEnabled ? <SilentTypingEnabledIcon /> : <SilentTypingIcon />}
+            {enabled ? <SilentTypingEnabledIcon /> : <SilentTypingIcon />}
         </ChatBarButton>
     );
 };
 
 
 const ChatBarContextCheckbox: NavContextMenuPatchCallback = children => {
-    const { isEnabled, contextMenu } = settings.use(["isEnabled", "contextMenu"]);
+    const { contextMenu } = settings.use(["contextMenu"]);
     if (!contextMenu) return;
 
     const group = findGroupChildrenByChildId("submit-button", children);
 
     if (!group) return;
 
-    const idx = group.findIndex(c => c?.props?.id === "submit-button");
+    const submitButtonIndex = group.findIndex(c => c?.props?.id === "submit-button");
+    const insertionIndex = submitButtonIndex === -1 ? group.length : submitButtonIndex + 1;
+    const channelId = SelectedChannelStore.getChannelId();
 
-    group.splice(idx + 1, 0,
-        <Menu.MenuCheckboxItem
-            id="vc-silent-typing"
-            label="Enable Silent Typing"
-            checked={isEnabled}
-            action={() => settings.store.isEnabled = !settings.store.isEnabled}
-        />
-    );
+    if (channelId) {
+        group.splice(insertionIndex, 0,
+            <Menu.MenuCheckboxItem
+                id="vc-silent-typing-channel"
+                label="Silent Typing (this channel)"
+                checked={isEnabledForChannel(channelId)}
+                action={() => toggleChannel(channelId)}
+            />
+        );
+    }
 };
 
 
@@ -149,7 +185,7 @@ export default definePlugin({
     }],
 
     async startTyping(channelId: string) {
-        if (settings.store.isEnabled) return;
+        if (isEnabledForChannel(channelId)) return;
         FluxDispatcher.dispatch({ type: "TYPING_START_LOCAL", channelId });
     },
 
